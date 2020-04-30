@@ -2,10 +2,12 @@ package soap
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -21,9 +23,15 @@ type SOAPDecoder interface {
 }
 
 type SOAPEnvelope struct {
-	XMLName xml.Name      `xml:"http://schemas.xmlsoap.org/soap/envelope/ Envelope"`
-	Headers []interface{} `xml:"http://schemas.xmlsoap.org/soap/envelope/ Header"`
+	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Envelope"`
+	Header  *SOAPHeader
 	Body    SOAPBody
+}
+
+type SOAPHeader struct {
+	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Header"`
+
+	Headers []interface{}
 }
 
 type SOAPBody struct {
@@ -280,9 +288,10 @@ func (s *Client) call(ctx context.Context, soapAction string, request, response 
 	envelope := SOAPEnvelope{}
 
 	if s.headers != nil && len(s.headers) > 0 {
-		envelope.Headers = s.headers
+		envelope.Header = &SOAPHeader{
+			Headers: s.headers,
+		}
 	}
-
 	envelope.Body.Content = request
 	buffer := new(bytes.Buffer)
 	var encoder SOAPEncoder
@@ -351,11 +360,20 @@ func (s *Client) call(ctx context.Context, soapAction string, request, response 
 		return err
 	}
 
+	var reader io.ReadCloser
+	switch res.Header.Get("Content-Encoding") {
+	case "gzip":
+		reader, err = gzip.NewReader(res.Body)
+		defer reader.Close()
+	default:
+		reader = res.Body
+	}
+
 	var dec SOAPDecoder
 	if mtomBoundary != "" {
-		dec = newMtomDecoder(res.Body, mtomBoundary)
+		dec = newMtomDecoder(reader, mtomBoundary)
 	} else {
-		dec = xml.NewDecoder(res.Body)
+		dec = xml.NewDecoder(reader)
 	}
 
 	if err := dec.Decode(respEnvelope); err != nil {
